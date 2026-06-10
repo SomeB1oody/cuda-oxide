@@ -656,5 +656,266 @@ pub(crate) fn make_slice_struct(ctx: &mut Context) -> Ptr<TypeObj> {
 
 #[cfg(test)]
 mod tests {
-    // TODO (npasham): Add unit tests for type conversion
+    //! Hardware-free unit tests for [`build_struct_slot_map`]: the slot map
+    //! and the LLVM struct type are produced by the same walk, so these
+    //! tests pin down both for the layout shapes from issue #128.
+
+    use super::*;
+    use dialect_mir::types::{EnumVariant, MirEnumType};
+
+    fn make_ctx() -> Context {
+        let mut ctx = Context::new();
+        dialect_mir::register(&mut ctx);
+        crate::register(&mut ctx);
+        ctx
+    }
+
+    /// A MIR-level unsigned integer type (what the importer produces).
+    fn mir_uint(ctx: &mut Context, width: u32) -> Ptr<TypeObj> {
+        IntegerType::get(ctx, width, Signedness::Unsigned).into()
+    }
+
+    /// A converted (signless) LLVM integer type.
+    fn llvm_int(ctx: &mut Context, width: u32) -> Ptr<TypeObj> {
+        IntegerType::get(ctx, width, Signedness::Signless).into()
+    }
+
+    /// `[n x i8]` padding type, as `make_padding_type` builds it.
+    fn pad(ctx: &mut Context, n: u64) -> Ptr<TypeObj> {
+        make_padding_type(ctx, n)
+    }
+
+    /// A zero-sized MIR struct (PhantomData shape).
+    fn mir_zst(ctx: &mut Context) -> Ptr<TypeObj> {
+        MirStructType::get(ctx, "Phantom".into(), vec![], vec![]).into()
+    }
+
+    fn struct_fields(ctx: &Context, ty: Ptr<TypeObj>) -> Vec<Ptr<TypeObj>> {
+        ty.deref(ctx)
+            .downcast_ref::<llvm_types::StructType>()
+            .expect("expected an LLVM struct type")
+            .fields()
+            .collect()
+    }
+
+    #[test]
+    fn slot_map_reorder_only() {
+        let mut ctx = make_ctx();
+        // struct { a: u8, b: u64 }, memory order [b, a], no rustc offsets.
+        let a = mir_uint(&mut ctx, 8);
+        let b = mir_uint(&mut ctx, 64);
+        let layout = StructLayoutInfo {
+            field_types: vec![a, b],
+            mem_to_decl: vec![1, 0],
+            field_offsets: vec![],
+            total_size: 0,
+        };
+        let map = build_struct_slot_map(&mut ctx, &layout).unwrap();
+
+        assert_eq!(map.decl_to_llvm, vec![Some(1), Some(0)]);
+        let i8s = llvm_int(&mut ctx, 8);
+        let i64s = llvm_int(&mut ctx, 64);
+        assert_eq!(struct_fields(&ctx, map.llvm_struct_ty), vec![i64s, i8s]);
+    }
+
+    #[test]
+    fn slot_map_padding_only() {
+        let mut ctx = make_ctx();
+        // struct { a: u8 @ 0, b: u64 @ 8 }, declaration order == memory
+        // order, size 16: lowers to { i8, [7 x i8], i64 }. The pad consumes
+        // slot 1, so b lands at slot 2 (the issue #128 sites used 1).
+        let a = mir_uint(&mut ctx, 8);
+        let b = mir_uint(&mut ctx, 64);
+        let layout = StructLayoutInfo {
+            field_types: vec![a, b],
+            mem_to_decl: vec![0, 1],
+            field_offsets: vec![0, 8],
+            total_size: 16,
+        };
+        let map = build_struct_slot_map(&mut ctx, &layout).unwrap();
+
+        assert_eq!(map.decl_to_llvm, vec![Some(0), Some(2)]);
+        let i8s = llvm_int(&mut ctx, 8);
+        let i64s = llvm_int(&mut ctx, 64);
+        let pad7 = pad(&mut ctx, 7);
+        assert_eq!(
+            struct_fields(&ctx, map.llvm_struct_ty),
+            vec![i8s, pad7, i64s]
+        );
+    }
+
+    #[test]
+    fn slot_map_reorder_plus_padding() {
+        let mut ctx = make_ctx();
+        // struct { a: u8 @ 8, b: u64 @ 0 }, memory order [b, a], size 16:
+        // lowers to { i64, i8, [7 x i8] } with a trailing pad.
+        let a = mir_uint(&mut ctx, 8);
+        let b = mir_uint(&mut ctx, 64);
+        let layout = StructLayoutInfo {
+            field_types: vec![a, b],
+            mem_to_decl: vec![1, 0],
+            field_offsets: vec![8, 0],
+            total_size: 16,
+        };
+        let map = build_struct_slot_map(&mut ctx, &layout).unwrap();
+
+        assert_eq!(map.decl_to_llvm, vec![Some(1), Some(0)]);
+        let i8s = llvm_int(&mut ctx, 8);
+        let i64s = llvm_int(&mut ctx, 64);
+        let pad7 = pad(&mut ctx, 7);
+        assert_eq!(
+            struct_fields(&ctx, map.llvm_struct_ty),
+            vec![i64s, i8s, pad7]
+        );
+    }
+
+    #[test]
+    fn slot_map_zst_interleaving() {
+        let mut ctx = make_ctx();
+        // struct { a: u32 @ 0, z: PhantomData @ 4, b: u32 @ 4 }, size 8.
+        // The ZST is stripped (no slot, no pad split): { i32, i32 }.
+        let a = mir_uint(&mut ctx, 32);
+        let z = mir_zst(&mut ctx);
+        let b = mir_uint(&mut ctx, 32);
+        let layout = StructLayoutInfo {
+            field_types: vec![a, z, b],
+            mem_to_decl: vec![0, 1, 2],
+            field_offsets: vec![0, 4, 4],
+            total_size: 8,
+        };
+        let map = build_struct_slot_map(&mut ctx, &layout).unwrap();
+
+        assert_eq!(map.decl_to_llvm, vec![Some(0), None, Some(1)]);
+        let i32s = llvm_int(&mut ctx, 32);
+        assert_eq!(struct_fields(&ctx, map.llvm_struct_ty), vec![i32s, i32s]);
+    }
+
+    #[test]
+    fn slot_map_issue128_arena_shape() {
+        let mut ctx = make_ctx();
+        // The exact shape from issue #128 (examples/struct_layout_repro):
+        //
+        //   enum Layout { Aos, Soa, AoSoA(u32) }          // -> { i8, i32 }
+        //   struct Arena { layout: Layout, cap: u32, stride: u32, big: u64 }
+        //
+        // rustc layout: layout @ 0 (8 bytes), big @ 8, cap @ 16,
+        // stride @ 20, size 24. The enum's lowered form { i8, i32 } only
+        // covers 5 of its 8 bytes, so a [3 x i8] pad takes slot 1:
+        //
+        //   { { i8, i32 }, [3 x i8], i64, i32, i32 }
+        //     layout=0     pad=1     big=2 cap=3 stride=4
+        let discr = mir_uint(&mut ctx, 8);
+        let payload = mir_uint(&mut ctx, 32);
+        let layout_enum: Ptr<TypeObj> = MirEnumType::get(
+            &mut ctx,
+            "Layout".into(),
+            discr,
+            vec![
+                EnumVariant::unit("Aos".into()),
+                EnumVariant::unit("Soa".into()),
+                EnumVariant::new("AoSoA".into(), vec![payload]),
+            ],
+        )
+        .into();
+        let cap = mir_uint(&mut ctx, 32);
+        let stride = mir_uint(&mut ctx, 32);
+        let big = mir_uint(&mut ctx, 64);
+
+        let layout = StructLayoutInfo {
+            field_types: vec![layout_enum, cap, stride, big],
+            mem_to_decl: vec![0, 3, 1, 2],
+            field_offsets: vec![0, 16, 20, 8],
+            total_size: 24,
+        };
+        let map = build_struct_slot_map(&mut ctx, &layout).unwrap();
+
+        assert_eq!(
+            map.decl_to_llvm,
+            vec![Some(0), Some(3), Some(4), Some(2)],
+            "cap/stride/big must skip the [3 x i8] pad at slot 1"
+        );
+
+        let i8s = llvm_int(&mut ctx, 8);
+        let i32s = llvm_int(&mut ctx, 32);
+        let i64s = llvm_int(&mut ctx, 64);
+        let enum_llvm: Ptr<TypeObj> =
+            llvm_types::StructType::get_unnamed(&mut ctx, vec![i8s, i32s]).into();
+        let pad3 = pad(&mut ctx, 3);
+        assert_eq!(
+            struct_fields(&ctx, map.llvm_struct_ty),
+            vec![enum_llvm, pad3, i64s, i32s, i32s]
+        );
+    }
+
+    #[test]
+    fn slot_map_nested_struct_uses_stored_size() {
+        let mut ctx = make_ctx();
+        // Inner struct whose stored rustc size (16) exceeds the sum of its
+        // converted LLVM field sizes (i8 + i64 = 9, no offsets stored).
+        // The outer walk must advance by the stored 16, reaching the next
+        // field's offset exactly: NO interior pad before it.
+        let x = mir_uint(&mut ctx, 8);
+        let y = mir_uint(&mut ctx, 64);
+        let inner: Ptr<TypeObj> = MirStructType::get_with_full_layout(
+            &mut ctx,
+            "Inner".into(),
+            vec!["x".into(), "y".into()],
+            vec![x, y],
+            vec![],
+            vec![],
+            16,
+            0,
+        )
+        .into();
+        let c = mir_uint(&mut ctx, 8);
+
+        let layout = StructLayoutInfo {
+            field_types: vec![inner, c],
+            mem_to_decl: vec![0, 1],
+            field_offsets: vec![0, 16],
+            total_size: 24,
+        };
+        let map = build_struct_slot_map(&mut ctx, &layout).unwrap();
+
+        // inner = slot 0, c = slot 1 (adjacent), trailing [7 x i8] pad.
+        assert_eq!(map.decl_to_llvm, vec![Some(0), Some(1)]);
+        let fields = struct_fields(&ctx, map.llvm_struct_ty);
+        assert_eq!(fields.len(), 3, "exactly one (trailing) pad slot");
+        let pad7 = pad(&mut ctx, 7);
+        assert_eq!(fields[2], pad7);
+    }
+
+    #[test]
+    fn slot_map_rejects_malformed_memory_order() {
+        let mut ctx = make_ctx();
+        let a = mir_uint(&mut ctx, 8);
+        let b = mir_uint(&mut ctx, 64);
+
+        // Not a permutation: decl index 0 appears twice.
+        let dup = StructLayoutInfo {
+            field_types: vec![a, b],
+            mem_to_decl: vec![0, 0],
+            field_offsets: vec![],
+            total_size: 0,
+        };
+        assert!(build_struct_slot_map(&mut ctx, &dup).is_err());
+
+        // Wrong length.
+        let short = StructLayoutInfo {
+            field_types: vec![a, b],
+            mem_to_decl: vec![0],
+            field_offsets: vec![],
+            total_size: 0,
+        };
+        assert!(build_struct_slot_map(&mut ctx, &short).is_err());
+
+        // Offsets vector length mismatch (with explicit layout engaged).
+        let bad_offsets = StructLayoutInfo {
+            field_types: vec![a, b],
+            mem_to_decl: vec![0, 1],
+            field_offsets: vec![0],
+            total_size: 16,
+        };
+        assert!(build_struct_slot_map(&mut ctx, &bad_offsets).is_err());
+    }
 }
