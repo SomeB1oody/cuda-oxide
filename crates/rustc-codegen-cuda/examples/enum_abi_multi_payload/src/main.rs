@@ -32,7 +32,7 @@
 //!   cargo oxide run enum_abi_multi_payload
 
 use cuda_core::{CudaContext, DeviceBuffer, DeviceCopy, LaunchConfig};
-use cuda_device::{kernel, thread, DisjointSlice};
+use cuda_device::{DisjointSlice, kernel, thread};
 use cuda_host::cuda_module;
 
 /// Two overlapping payload variants (different types at byte 4) plus a
