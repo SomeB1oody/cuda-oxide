@@ -228,11 +228,19 @@ impl RustFloatMathIntrinsic {
             "trunc" => Some(Self::TruncF64),
             "roundf" => Some(Self::RoundF32),
             "round" => Some(Self::RoundF64),
+            // libm's `rint` documents round-half-to-even; the device has no
+            // dynamic rounding mode, so it shares the roundeven lowering.
+            "rintf" | "roundevenf" => Some(Self::RoundevenF32),
+            "rint" | "roundeven" => Some(Self::RoundevenF64),
             "fmaf" => Some(Self::FmaF32),
             "fma" => Some(Self::FmaF64),
             "fabsf" | "fabs" => Some(Self::Fabs),
             "copysignf" => Some(Self::CopysignF32),
             "copysign" => Some(Self::CopysignF64),
+            "fmaxf" => Some(Self::MaxNumNszF32),
+            "fmax" => Some(Self::MaxNumNszF64),
+            "fminf" => Some(Self::MinNumNszF32),
+            "fmin" => Some(Self::MinNumNszF64),
             "atan2f" => Some(Self::Atan2F32),
             "atan2" => Some(Self::Atan2F64),
             "atanf" => Some(Self::AtanF32),
@@ -567,6 +575,29 @@ mod tests {
                 RustFloatMathIntrinsic::from_core_path(path),
                 None,
                 "user function `{path}` was wrongly rerouted to libdevice"
+            );
+        }
+    }
+
+    /// Pin the libm names that reuse existing enum variants: fmax/fmin map
+    /// to the `_nsz` maxNum/minNum lowering (same as `f32::max`/`f32::min`),
+    /// and rint/roundeven map to the round-ties-even lowering.
+    #[test]
+    fn libm_fmax_fmin_rint_roundeven_map_to_existing_variants() {
+        for (path, expected) in [
+            ("libm::fmaxf", RustFloatMathIntrinsic::MaxNumNszF32),
+            ("libm::fmax", RustFloatMathIntrinsic::MaxNumNszF64),
+            ("libm::fminf", RustFloatMathIntrinsic::MinNumNszF32),
+            ("libm::fmin", RustFloatMathIntrinsic::MinNumNszF64),
+            ("libm::rintf", RustFloatMathIntrinsic::RoundevenF32),
+            ("libm::rint", RustFloatMathIntrinsic::RoundevenF64),
+            ("libm::roundevenf", RustFloatMathIntrinsic::RoundevenF32),
+            ("libm::roundeven", RustFloatMathIntrinsic::RoundevenF64),
+        ] {
+            assert_eq!(
+                RustFloatMathIntrinsic::from_core_path(path),
+                Some(expected),
+                "`{path}` did not map to the expected intrinsic"
             );
         }
     }
