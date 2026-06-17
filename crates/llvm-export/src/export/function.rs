@@ -231,7 +231,9 @@ impl<'a> ModuleExportState<'a> {
         // Emitted as a function attribute keyword between the parameter
         // list and the body open brace.
         let alwaysinline_key: pliron::identifier::Identifier = "alwaysinline".try_into().unwrap();
-        let is_alwaysinline = attrs.0.contains_key(&alwaysinline_key);
+        let is_alwaysinline = attrs
+            .get::<pliron::builtin::attributes::StringAttr>(&alwaysinline_key)
+            .is_some();
 
         if let Some(entry_block) = entry_block_opt {
             let func_loc = func.get_operation().deref(self.ctx).loc();

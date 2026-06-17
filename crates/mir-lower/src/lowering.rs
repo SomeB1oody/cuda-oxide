@@ -243,14 +243,17 @@ fn propagate_alwaysinline_attr(
     llvm_func: &llvm::FuncOp,
 ) {
     let key: pliron::identifier::Identifier = "alwaysinline".try_into().unwrap();
-    let attr_opt = mir_op.deref(ctx).attributes.0.get(&key).cloned();
+    let attr_opt = mir_op
+        .deref(ctx)
+        .attributes
+        .get::<pliron::builtin::attributes::StringAttr>(&key)
+        .cloned();
     if let Some(attr) = attr_opt {
         llvm_func
             .get_operation()
             .deref_mut(ctx)
             .attributes
-            .0
-            .insert(key, attr);
+            .set(key, attr);
     }
 }
 

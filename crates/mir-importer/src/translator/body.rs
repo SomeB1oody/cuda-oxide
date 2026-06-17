@@ -831,8 +831,7 @@ fn set_alwaysinline_attr_from_flag(
             .get_operation()
             .deref_mut(ctx)
             .attributes
-            .0
-            .insert(key, attr.into());
+            .set(key, attr);
     }
 }
 
