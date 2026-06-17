@@ -31,10 +31,7 @@ use pliron_derive::pliron_op;
 // on LLVM export data structures.
 const DEBUG_LOCAL_NAME_KEY: &str = "cuda_oxide_debug_local_name";
 const DEBUG_LOCAL_ARG_KEY: &str = "cuda_oxide_debug_local_arg";
-const DEBUG_LOCAL_TYPE_KIND_KEY: &str = "cuda_oxide_debug_local_type_kind";
-const DEBUG_LOCAL_TYPE_NAME_KEY: &str = "cuda_oxide_debug_local_type_name";
-const DEBUG_LOCAL_TYPE_SIZE_KEY: &str = "cuda_oxide_debug_local_type_size_bits";
-const DEBUG_LOCAL_TYPE_ENCODING_KEY: &str = "cuda_oxide_debug_local_type_encoding";
+const DEBUG_LOCAL_TYPE_KEY: &str = "cuda_oxide_debug_local_type";
 const DEBUG_LOCAL_DECL_FILE_KEY: &str = "cuda_oxide_debug_local_decl_file";
 const DEBUG_LOCAL_DECL_LINE_KEY: &str = "cuda_oxide_debug_local_decl_line";
 const DEBUG_LOCAL_DECL_COLUMN_KEY: &str = "cuda_oxide_debug_local_decl_column";
@@ -43,10 +40,7 @@ const DEBUG_LOCAL_SCOPE_KEY: &str = "cuda_oxide_debug_local_scope";
 const DEBUG_LOCAL_ATTR_KEYS: &[&str] = &[
     DEBUG_LOCAL_NAME_KEY,
     DEBUG_LOCAL_ARG_KEY,
-    DEBUG_LOCAL_TYPE_KIND_KEY,
-    DEBUG_LOCAL_TYPE_NAME_KEY,
-    DEBUG_LOCAL_TYPE_SIZE_KEY,
-    DEBUG_LOCAL_TYPE_ENCODING_KEY,
+    DEBUG_LOCAL_TYPE_KEY,
     DEBUG_LOCAL_DECL_FILE_KEY,
     DEBUG_LOCAL_DECL_LINE_KEY,
     DEBUG_LOCAL_DECL_COLUMN_KEY,
@@ -139,9 +133,7 @@ pub(crate) fn debug_value_for_promoted_slot(
 
 fn has_debug_local_attrs(ctx: &Context, op: Ptr<Operation>) -> bool {
     get_string_attr(ctx, op, DEBUG_LOCAL_NAME_KEY).is_some()
-        && get_string_attr(ctx, op, DEBUG_LOCAL_TYPE_KIND_KEY).is_some()
-        && get_string_attr(ctx, op, DEBUG_LOCAL_TYPE_NAME_KEY).is_some()
-        && get_string_attr(ctx, op, DEBUG_LOCAL_TYPE_SIZE_KEY).is_some()
+        && get_string_attr(ctx, op, DEBUG_LOCAL_TYPE_KEY).is_some()
 }
 
 pub(crate) fn copy_debug_local_attrs(ctx: &mut Context, from: Ptr<Operation>, to: Ptr<Operation>) {

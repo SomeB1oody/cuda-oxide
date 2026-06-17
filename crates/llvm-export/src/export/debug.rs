@@ -414,6 +414,62 @@ impl<'a> ModuleExportState<'a> {
                      baseType: null, size: {size_bits})"
                 )
             }
+            DebugLocalTypeKind::Struct {
+                name,
+                size_bits,
+                members,
+            } => {
+                // Emit each member's base type (may recurse) and a DW_TAG_member
+                // node, then the elements tuple, then the composite itself.
+                let member_ids: Vec<usize> = members
+                    .iter()
+                    .map(|member| {
+                        let base = self.ensure_debug_type(&member.ty);
+                        let member_name = escape_debug_string(&member.name);
+                        let member_size = member.ty.size_bits();
+                        let id = self.alloc_metadata_id();
+                        self.debug_nodes.push((
+                            id,
+                            format!(
+                                "!DIDerivedType(tag: DW_TAG_member, name: \"{member_name}\", \
+                                 baseType: !{base}, size: {member_size}, offset: {})",
+                                member.offset_bits
+                            ),
+                        ));
+                        id
+                    })
+                    .collect();
+                let elements = member_ids
+                    .iter()
+                    .map(|id| format!("!{id}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let elements_id = self.alloc_metadata_id();
+                self.debug_nodes.push((elements_id, format!("!{{{elements}}}")));
+                let name = escape_debug_string(name);
+                format!(
+                    "!DICompositeType(tag: DW_TAG_structure_type, name: \"{name}\", \
+                     size: {size_bits}, elements: !{elements_id})"
+                )
+            }
+            DebugLocalTypeKind::Array {
+                size_bits,
+                element,
+                count,
+                ..
+            } => {
+                let base = self.ensure_debug_type(element);
+                let subrange_id = self.alloc_metadata_id();
+                self.debug_nodes
+                    .push((subrange_id, format!("!DISubrange(count: {count})")));
+                let elements_id = self.alloc_metadata_id();
+                self.debug_nodes
+                    .push((elements_id, format!("!{{!{subrange_id}}}")));
+                format!(
+                    "!DICompositeType(tag: DW_TAG_array_type, baseType: !{base}, \
+                     size: {size_bits}, elements: !{elements_id})"
+                )
+            }
         };
 
         let id = self.alloc_metadata_id();

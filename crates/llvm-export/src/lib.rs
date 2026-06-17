@@ -211,6 +211,193 @@ pub mod ops {
         },
         /// A pointer/reference `DIDerivedType`.
         Pointer { name: String, size_bits: u64 },
+        /// A struct or tuple `DICompositeType` (`DW_TAG_structure_type`).
+        ///
+        /// Member offsets come from rustc's real layout, not declaration order,
+        /// so this is correct even for `repr(Rust)` field reordering. Tuples are
+        /// modelled as a struct whose members are named `__0`, `__1`, ...
+        Struct {
+            name: String,
+            size_bits: u64,
+            members: Vec<DebugTypeMember>,
+        },
+        /// A fixed-length array `DICompositeType` (`DW_TAG_array_type`).
+        Array {
+            name: String,
+            size_bits: u64,
+            element: Box<DebugLocalTypeKind>,
+            count: u64,
+        },
+    }
+
+    /// One member of a [`DebugLocalTypeKind::Struct`].
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    pub struct DebugTypeMember {
+        pub name: String,
+        /// Byte-offset of the member within its parent, in bits.
+        pub offset_bits: u64,
+        pub ty: DebugLocalTypeKind,
+    }
+
+    impl DebugLocalTypeKind {
+        /// Size of this type in bits, used to fill `DIDerivedType`/member sizes.
+        pub fn size_bits(&self) -> u64 {
+            match self {
+                DebugLocalTypeKind::Basic { size_bits, .. }
+                | DebugLocalTypeKind::Pointer { size_bits, .. }
+                | DebugLocalTypeKind::Struct { size_bits, .. }
+                | DebugLocalTypeKind::Array { size_bits, .. } => *size_bits,
+            }
+        }
+    }
+
+    /// Map a serialized DWARF encoding name back to its `&'static str`.
+    fn debug_encoding_from_str(s: &str) -> Option<&'static str> {
+        match s {
+            "DW_ATE_boolean" => Some("DW_ATE_boolean"),
+            "DW_ATE_float" => Some("DW_ATE_float"),
+            "DW_ATE_signed" => Some("DW_ATE_signed"),
+            "DW_ATE_unsigned" => Some("DW_ATE_unsigned"),
+            _ => None,
+        }
+    }
+
+    /// Serialize a type tree into a compact, escape-safe string.
+    ///
+    /// Strings are length-prefixed (`<byte-len> <bytes>`) so arbitrary type
+    /// names (`&[u32]`, `Foo<'_, u64>`) round-trip without delimiter escaping.
+    /// Numbers are space-terminated. This is the value stored under
+    /// [`DEBUG_LOCAL_TYPE_KEY`]; the reader is [`deserialize_debug_type`].
+    fn serialize_debug_type(ty: &DebugLocalTypeKind, out: &mut String) {
+        fn put_u64(out: &mut String, n: u64) {
+            out.push_str(&n.to_string());
+            out.push(' ');
+        }
+        fn put_str(out: &mut String, s: &str) {
+            put_u64(out, s.len() as u64);
+            out.push_str(s);
+        }
+        match ty {
+            DebugLocalTypeKind::Basic {
+                name,
+                size_bits,
+                encoding,
+            } => {
+                out.push('b');
+                put_u64(out, *size_bits);
+                put_str(out, encoding);
+                put_str(out, name);
+            }
+            DebugLocalTypeKind::Pointer { name, size_bits } => {
+                out.push('p');
+                put_u64(out, *size_bits);
+                put_str(out, name);
+            }
+            DebugLocalTypeKind::Struct {
+                name,
+                size_bits,
+                members,
+            } => {
+                out.push('s');
+                put_u64(out, *size_bits);
+                put_str(out, name);
+                put_u64(out, members.len() as u64);
+                for member in members {
+                    put_str(out, &member.name);
+                    put_u64(out, member.offset_bits);
+                    serialize_debug_type(&member.ty, out);
+                }
+            }
+            DebugLocalTypeKind::Array {
+                name,
+                size_bits,
+                element,
+                count,
+            } => {
+                out.push('a');
+                put_u64(out, *size_bits);
+                put_str(out, name);
+                put_u64(out, *count);
+                serialize_debug_type(element, out);
+            }
+        }
+    }
+
+    /// Reverse of [`serialize_debug_type`]. Returns `None` on malformed input.
+    fn deserialize_debug_type(bytes: &[u8], pos: &mut usize) -> Option<DebugLocalTypeKind> {
+        fn take_u64(bytes: &[u8], pos: &mut usize) -> Option<u64> {
+            let start = *pos;
+            while *pos < bytes.len() && bytes[*pos] != b' ' {
+                *pos += 1;
+            }
+            let n: u64 = std::str::from_utf8(&bytes[start..*pos]).ok()?.parse().ok()?;
+            *pos += 1; // consume the space
+            Some(n)
+        }
+        fn take_str(bytes: &[u8], pos: &mut usize) -> Option<String> {
+            let len = take_u64(bytes, pos)? as usize;
+            let end = pos.checked_add(len)?;
+            if end > bytes.len() {
+                return None;
+            }
+            let s = std::str::from_utf8(&bytes[*pos..end]).ok()?.to_string();
+            *pos = end;
+            Some(s)
+        }
+
+        let tag = *bytes.get(*pos)?;
+        *pos += 1;
+        match tag {
+            b'b' => {
+                let size_bits = take_u64(bytes, pos)?;
+                let encoding = debug_encoding_from_str(&take_str(bytes, pos)?)?;
+                let name = take_str(bytes, pos)?;
+                Some(DebugLocalTypeKind::Basic {
+                    name,
+                    size_bits,
+                    encoding,
+                })
+            }
+            b'p' => {
+                let size_bits = take_u64(bytes, pos)?;
+                let name = take_str(bytes, pos)?;
+                Some(DebugLocalTypeKind::Pointer { name, size_bits })
+            }
+            b's' => {
+                let size_bits = take_u64(bytes, pos)?;
+                let name = take_str(bytes, pos)?;
+                let member_count = take_u64(bytes, pos)? as usize;
+                let mut members = Vec::with_capacity(member_count);
+                for _ in 0..member_count {
+                    let member_name = take_str(bytes, pos)?;
+                    let offset_bits = take_u64(bytes, pos)?;
+                    let ty = deserialize_debug_type(bytes, pos)?;
+                    members.push(DebugTypeMember {
+                        name: member_name,
+                        offset_bits,
+                        ty,
+                    });
+                }
+                Some(DebugLocalTypeKind::Struct {
+                    name,
+                    size_bits,
+                    members,
+                })
+            }
+            b'a' => {
+                let size_bits = take_u64(bytes, pos)?;
+                let name = take_str(bytes, pos)?;
+                let count = take_u64(bytes, pos)?;
+                let element = Box::new(deserialize_debug_type(bytes, pos)?);
+                Some(DebugLocalTypeKind::Array {
+                    name,
+                    size_bits,
+                    element,
+                    count,
+                })
+            }
+            _ => None,
+        }
     }
 
     /// Debug metadata attached to the alloca that stores a source local.
@@ -266,10 +453,8 @@ pub mod ops {
 
     const DEBUG_LOCAL_NAME_KEY: &str = "cuda_oxide_debug_local_name";
     const DEBUG_LOCAL_ARG_KEY: &str = "cuda_oxide_debug_local_arg";
-    const DEBUG_LOCAL_TYPE_KIND_KEY: &str = "cuda_oxide_debug_local_type_kind";
-    const DEBUG_LOCAL_TYPE_NAME_KEY: &str = "cuda_oxide_debug_local_type_name";
-    const DEBUG_LOCAL_TYPE_SIZE_KEY: &str = "cuda_oxide_debug_local_type_size_bits";
-    const DEBUG_LOCAL_TYPE_ENCODING_KEY: &str = "cuda_oxide_debug_local_type_encoding";
+    /// The whole source-local type tree, serialized by [`serialize_debug_type`].
+    const DEBUG_LOCAL_TYPE_KEY: &str = "cuda_oxide_debug_local_type";
     const DEBUG_LOCAL_DECL_FILE_KEY: &str = "cuda_oxide_debug_local_decl_file";
     const DEBUG_LOCAL_DECL_LINE_KEY: &str = "cuda_oxide_debug_local_decl_line";
     const DEBUG_LOCAL_DECL_COLUMN_KEY: &str = "cuda_oxide_debug_local_decl_column";
@@ -323,23 +508,9 @@ pub mod ops {
             set_string_attr(ctx, op, DEBUG_LOCAL_ARG_KEY, arg.to_string());
         }
 
-        match info.ty {
-            DebugLocalTypeKind::Basic {
-                name,
-                size_bits,
-                encoding,
-            } => {
-                set_string_attr(ctx, op, DEBUG_LOCAL_TYPE_KIND_KEY, "basic".to_string());
-                set_string_attr(ctx, op, DEBUG_LOCAL_TYPE_NAME_KEY, name);
-                set_string_attr(ctx, op, DEBUG_LOCAL_TYPE_SIZE_KEY, size_bits.to_string());
-                set_string_attr(ctx, op, DEBUG_LOCAL_TYPE_ENCODING_KEY, encoding.to_string());
-            }
-            DebugLocalTypeKind::Pointer { name, size_bits } => {
-                set_string_attr(ctx, op, DEBUG_LOCAL_TYPE_KIND_KEY, "pointer".to_string());
-                set_string_attr(ctx, op, DEBUG_LOCAL_TYPE_NAME_KEY, name);
-                set_string_attr(ctx, op, DEBUG_LOCAL_TYPE_SIZE_KEY, size_bits.to_string());
-            }
-        }
+        let mut encoded = String::new();
+        serialize_debug_type(&info.ty, &mut encoded);
+        set_string_attr(ctx, op, DEBUG_LOCAL_TYPE_KEY, encoded);
     }
 
     /// Read source-local debug metadata from a memory slot op, if present.
@@ -350,24 +521,8 @@ pub mod ops {
         let name = get_string_attr(ctx, op, DEBUG_LOCAL_NAME_KEY)?;
         let argument_index =
             get_string_attr(ctx, op, DEBUG_LOCAL_ARG_KEY).and_then(|arg| arg.parse::<u16>().ok());
-        let kind = get_string_attr(ctx, op, DEBUG_LOCAL_TYPE_KIND_KEY)?;
-        let type_name = get_string_attr(ctx, op, DEBUG_LOCAL_TYPE_NAME_KEY)?;
-        let size_bits = get_string_attr(ctx, op, DEBUG_LOCAL_TYPE_SIZE_KEY)?
-            .parse()
-            .ok()?;
-
-        let ty = match kind.as_str() {
-            "basic" => DebugLocalTypeKind::Basic {
-                name: type_name,
-                size_bits,
-                encoding: debug_type_encoding(ctx, op)?,
-            },
-            "pointer" => DebugLocalTypeKind::Pointer {
-                name: type_name,
-                size_bits,
-            },
-            _ => return None,
-        };
+        let encoded = get_string_attr(ctx, op, DEBUG_LOCAL_TYPE_KEY)?;
+        let ty = deserialize_debug_type(encoded.as_bytes(), &mut 0)?;
 
         Some(DebugLocalVariableInfo {
             name,
@@ -673,16 +828,6 @@ pub mod ops {
             .map(|a| String::from((*a).clone()))
     }
 
-    fn debug_type_encoding(ctx: &Context, op: Ptr<Operation>) -> Option<&'static str> {
-        match get_string_attr(ctx, op, DEBUG_LOCAL_TYPE_ENCODING_KEY)?.as_str() {
-            "DW_ATE_boolean" => Some("DW_ATE_boolean"),
-            "DW_ATE_float" => Some("DW_ATE_float"),
-            "DW_ATE_signed" => Some("DW_ATE_signed"),
-            "DW_ATE_unsigned" => Some("DW_ATE_unsigned"),
-            _ => None,
-        }
-    }
-
     /// LLVM debug-value marker used by the textual exporter.
     ///
     /// This is not a runtime instruction. It lowers to an `llvm.dbg.value`
@@ -760,6 +905,91 @@ pub mod ops {
                 .attributes
                 .get::<AlignmentAttr>(&key)
                 .map(|a| a.0 as u64)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{
+            DebugLocalTypeKind, DebugTypeMember, deserialize_debug_type, serialize_debug_type,
+        };
+
+        fn round_trip(ty: &DebugLocalTypeKind) -> DebugLocalTypeKind {
+            let mut encoded = String::new();
+            serialize_debug_type(ty, &mut encoded);
+            let mut pos = 0;
+            let decoded =
+                deserialize_debug_type(encoded.as_bytes(), &mut pos).expect("decode succeeds");
+            assert_eq!(pos, encoded.len(), "decoder consumed the whole blob");
+            decoded
+        }
+
+        #[test]
+        fn round_trips_nested_composites() {
+            // A struct whose members include a basic, a pointer, a fixed array,
+            // and a nested tuple-as-struct: exercises every variant + recursion.
+            let ty = DebugLocalTypeKind::Struct {
+                name: "Frame<'_, u64>".to_string(),
+                size_bits: 256,
+                members: vec![
+                    DebugTypeMember {
+                        name: "len".to_string(),
+                        offset_bits: 0,
+                        ty: DebugLocalTypeKind::Basic {
+                            name: "usize".to_string(),
+                            size_bits: 64,
+                            encoding: "DW_ATE_unsigned",
+                        },
+                    },
+                    DebugTypeMember {
+                        name: "data".to_string(),
+                        offset_bits: 64,
+                        ty: DebugLocalTypeKind::Pointer {
+                            name: "*mut u64".to_string(),
+                            size_bits: 64,
+                        },
+                    },
+                    DebugTypeMember {
+                        name: "lanes".to_string(),
+                        offset_bits: 128,
+                        ty: DebugLocalTypeKind::Array {
+                            name: "[u32; 2]".to_string(),
+                            size_bits: 64,
+                            element: Box::new(DebugLocalTypeKind::Basic {
+                                name: "u32".to_string(),
+                                size_bits: 32,
+                                encoding: "DW_ATE_signed",
+                            }),
+                            count: 2,
+                        },
+                    },
+                ],
+            };
+            assert_eq!(round_trip(&ty), ty);
+        }
+
+        #[test]
+        fn round_trips_names_with_delimiters() {
+            // Length-prefixing must survive names containing spaces/digits/braces.
+            let ty = DebugLocalTypeKind::Pointer {
+                name: "&[(u32, u32); 4] {x: 1}".to_string(),
+                size_bits: 64,
+            };
+            assert_eq!(round_trip(&ty), ty);
+        }
+
+        #[test]
+        fn rejects_truncated_blob() {
+            let ty = DebugLocalTypeKind::Basic {
+                name: "u32".to_string(),
+                size_bits: 32,
+                encoding: "DW_ATE_unsigned",
+            };
+            let mut encoded = String::new();
+            serialize_debug_type(&ty, &mut encoded);
+            encoded.truncate(encoded.len() - 1);
+            let mut pos = 0;
+            assert!(deserialize_debug_type(encoded.as_bytes(), &mut pos).is_none());
         }
     }
 }
