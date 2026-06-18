@@ -662,8 +662,7 @@ pub fn translate_statement(
                     }
                     (
                         mir::ProjectionElem::Field(_, _),
-                        mir::ProjectionElem::ConstantIndex { .. }
-                        | mir::ProjectionElem::Index(_),
+                        mir::ProjectionElem::ConstantIndex { .. } | mir::ProjectionElem::Index(_),
                     ) => {
                         // `_local.field[const]` or `_local.field[i]`: step into a
                         // struct field, then index into the resulting array. The
