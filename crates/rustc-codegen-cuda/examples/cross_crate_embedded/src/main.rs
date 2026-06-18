@@ -49,7 +49,12 @@ fn main() {
         for (i, (&got, &x)) in out.iter().zip(input.iter()).enumerate() {
             if (got - x * factor).abs() > 1e-5 {
                 if errors < 5 {
-                    eprintln!("  FAIL scale::<f32>[{}]: got {} want {}", i, got, x * factor);
+                    eprintln!(
+                        "  FAIL scale::<f32>[{}]: got {} want {}",
+                        i,
+                        got,
+                        x * factor
+                    );
                 }
                 errors += 1;
             }
@@ -69,7 +74,12 @@ fn main() {
         for (i, (&got, &x)) in out.iter().zip(input.iter()).enumerate() {
             if got != x * factor {
                 if errors < 5 {
-                    eprintln!("  FAIL scale::<i32>[{}]: got {} want {}", i, got, x * factor);
+                    eprintln!(
+                        "  FAIL scale::<i32>[{}]: got {} want {}",
+                        i,
+                        got,
+                        x * factor
+                    );
                 }
                 errors += 1;
             }
