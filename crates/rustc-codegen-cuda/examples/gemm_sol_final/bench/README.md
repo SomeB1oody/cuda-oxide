@@ -3,11 +3,11 @@
 GPU GEMM benchmarks for measuring Speed-of-Light (SoL) performance on
 Blackwell GPUs.
 
-| Script                 | What it measures                              | Dependencies              |
-|------------------------|-----------------------------------------------|---------------------------|
-| `cublaslt_bench.c`     | Live heuristic cuBLASLt GEMM reference        | CUDA toolkit (C compiler) |
-| `cublas_sol_bench.py`  | Legacy `cublasGemmEx` comparison             | numpy, CUDA toolkit       |
-| `cutlass_sol_bench.py` | CUTLASS CuTe DSL FP16 GEMM throughput         | nvidia-cutlass-dsl, torch |
+| Script                 | What it measures                       | Dependencies              |
+|------------------------|----------------------------------------|---------------------------|
+| `cublaslt_bench.c`     | Live heuristic cuBLASLt GEMM reference | CUDA toolkit (C compiler) |
+| `cublas_sol_bench.py`  | Legacy `cublasGemmEx` comparison       | numpy, CUDA toolkit       |
+| `cutlass_sol_bench.py` | CUTLASS CuTe DSL FP16 GEMM throughput  | nvidia-cutlass-dsl, torch |
 
 ## Reference choice
 
@@ -30,7 +30,7 @@ the accepted final measurements are recorded in `../README.md`.
 ## Requirements
 
 - **GPU**: Datacenter Blackwell. Verified on the current B300 (sm_103a).
-- **CUDA Toolkit**: 12.8+ (needs `libcudart.so`, `libcublasLt.so` on `LD_LIBRARY_PATH`)
+- **CUDA Toolkit**: 12.8+ at build time, plus a compatible NVIDIA driver at runtime
 - **Python**: 3.12+ (for Python benchmarks only)
 
 ## Setup
@@ -39,8 +39,9 @@ the accepted final measurements are recorded in `../README.md`.
 
 The packaged `build.sh` figures out CUDA paths (honoring `CUDA_HOME` /
 `CUDA_PATH`, then falling back to `/usr/local/cuda`) and rpath-pins the
-toolkit libraries. Enter `nix develop path:.` at the repository root; a
-system CTK also needs a compatible driver library on its runtime path:
+toolkit libraries ahead of any unrelated CUDA installation inherited through
+`LD_LIBRARY_PATH`. Enter `nix develop path:.` at the repository root; a system
+CTK also needs a compatible driver library on its runtime path:
 
 ```bash
 cd bench/

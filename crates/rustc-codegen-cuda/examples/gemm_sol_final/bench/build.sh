@@ -34,6 +34,13 @@ fi
 # nixpkgs ships .so files under $CUDA_HOME/lib; classic CTK installs use lib64.
 # Pass both -L paths and rpath-pin the toolkit libraries. The NVIDIA driver
 # library must still be discoverable; on this host, run inside the harness shell.
+#
+# Use old-style DT_RPATH deliberately. GNU ld emits DT_RUNPATH by default, but
+# LD_LIBRARY_PATH takes precedence over RUNPATH and RUNPATH is not inherited by
+# transitive dependencies. That allowed an unrelated /usr/local CUDA runtime to
+# replace the toolkit selected here, after which libcudart could not find the
+# Nix-provided libstdc++. DT_RPATH keeps this helper on the toolkit it was built
+# against while leaving driver discovery to the runtime environment.
 lib_args=()
 rpath_args=()
 for d in "$cuda_root/lib" "$cuda_root/lib64"; do
@@ -68,6 +75,7 @@ set -x
     -I"$cuda_root/include" \
     "${lib_args[@]}" \
     -lcublasLt -lcudart -lm \
+    -Wl,--disable-new-dtags \
     "${rpath_args[@]}"
 { set +x; } 2>/dev/null
 

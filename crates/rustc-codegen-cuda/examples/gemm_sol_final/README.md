@@ -1,8 +1,7 @@
 # gemm_sol_final
 
 Canonical cuda-oxide Blackwell GEMM speed-of-light example. It packages the
-best fully validated kernel accepted by the `gemm-sol-autocuda` search at
-commit `f82ab5e31740d5214d22970216396ac305c3b34c`.
+best fully validated kernel.
 
 The goal is simple: show how close a Rust/cuda-oxide kernel can get to the
 closest supported live cuBLASLt GEMM on the same GPU, without weakening the
