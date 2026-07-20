@@ -954,6 +954,10 @@ pub unsafe fn __launch_contract_config<const DOMAIN: u8, const U32_COORDINATES: 
 /// - `MIN_BLOCKS` - Minimum blocks per SM for occupancy (optional, default 0 = unspecified).
 ///   Maps to `.minnctapersm`.
 ///
+/// `MAX_THREADS` does not require an exact block size. For example, a maximum
+/// of 256 also permits a launch with 128 threads. Use an exact host
+/// `#[launch_contract(block = (...))]` when the kernel requires one shape.
+///
 /// # Performance Impact
 ///
 /// Launch bounds help the compiler:
@@ -965,9 +969,17 @@ pub unsafe fn __launch_contract_config<const DOMAIN: u8, const U32_COORDINATES: 
 /// register-heavy kernels or kernels with specific occupancy requirements.
 #[inline(never)]
 pub fn __launch_bounds_config<const MAX_THREADS: u32, const MIN_BLOCKS: u32>() {
+    const { validate_launch_bounds(MAX_THREADS) }
     // This function is detected at compile time and removed.
     // The const generics are extracted to set launch bounds.
     // No runtime code is generated.
+}
+
+const fn validate_launch_bounds(max_threads: u32) {
+    assert!(
+        max_threads > 0,
+        "launch_bounds maximum threads must be greater than zero"
+    );
 }
 
 /// Compile-time loop-unroll request marker (internal, do not call directly).
@@ -1015,17 +1027,27 @@ pub fn __launch_bounds_config<const MAX_THREADS: u32, const MIN_BLOCKS: u32>() {
 /// are not unrolled.
 ///
 /// One annotation may create at most 1,024 body copies, 8,192 cloned basic
-/// blocks, and 65,536 cloned operations. Larger requests warn and are not
-/// unrolled.
+/// blocks, and 65,536 cloned operations. A partial factor above 1,024 is
+/// rejected; other unsupported loop shapes warn and are not unrolled.
 ///
 /// # Parameters
 ///
 /// - `FACTOR = 0` requests full unrolling of this loop and requires a
 ///   compile-time-known trip count.
 /// - `FACTOR >= 2` requests partial unrolling of this loop by that factor.
+///   It groups that many iterations; it does not limit the loop to that many
+///   total iterations, and a remainder still runs.
 #[inline(never)]
 pub fn __unroll_config<const FACTOR: u32>() {
+    const { validate_unroll_factor(FACTOR) }
     // This function is detected at compile time and removed.
     // The const generic FACTOR is extracted to set the loop-unroll request.
     // No runtime code is generated.
+}
+
+const fn validate_unroll_factor(factor: u32) {
+    assert!(
+        factor == 0 || (factor >= 2 && factor <= 1024),
+        "partial unroll factor must be in 2..=1024, or 0 for full unrolling"
+    );
 }
