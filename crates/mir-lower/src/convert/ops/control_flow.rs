@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn convert_assert_creates_abort_block_with_trap() {
         // mir.assert lowers to a llvm.cond_br whose false side is a fresh
-        // block that calls @llvm.trap() and ends in llvm.unreachable=
+        // block that calls @llvm.trap() and ends in llvm.unreachable.
         let mut ctx = make_ctx();
         let i1_ty: TypeHandle = IntegerType::get(&ctx, 1, Signedness::Signless).into();
         let (module_ptr, entry) = build_kernel(&mut ctx, vec![i1_ty], vec![]);
