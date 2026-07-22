@@ -1673,15 +1673,13 @@ fn emit_trap_unreachable_after(
     prev_op: Option<Ptr<Operation>>,
     loc: Location,
 ) -> Ptr<Operation> {
-    let trap_op = Operation::new(
-        ctx,
-        dialect_nvvm::ops::TrapOp::get_concrete_op_info(),
-        vec![],
-        vec![],
-        vec![],
-        0,
-    );
+    let trap_op = dialect_nvvm::ops::TrapOp::build(ctx);
     trap_op.deref_mut(ctx).set_loc(loc.clone());
+    // `nvvm.trap` is a generated intrinsic; the target-requirements
+    // verifier rejects it without its exact ABI marker (`i0295` is
+    // trap's append-only id in intrinsics/abi-v1.toml, the same marker
+    // the generated `debug::trap` dispatch attaches).
+    helpers::set_generated_intrinsic_marker(ctx, trap_op, "v1:i0295");
     if let Some(prev) = prev_op {
         trap_op.insert_after(ctx, prev);
     } else {
